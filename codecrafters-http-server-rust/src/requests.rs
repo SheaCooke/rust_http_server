@@ -1,49 +1,39 @@
-use crate::{utilities::{get_directory, get_request, populate_headers_dictionary, create_http_response}};
+use crate::{utilities::{get_directory, get_request, populate_headers_dictionary, return_http_response}};
 use std::{collections::HashMap, fs::{self, File}, io::{Write}, net::TcpStream, path::{Path, PathBuf}};
+use crate::{types::{RequestState}};
 
 
-struct request_state {
-    close_connection: bool,
-    accept_encoding: String
-}
-
-fn handle_echo(request_target: &str, mut stream: &TcpStream, request_context: &request_state) -> () {
+fn handle_echo(request_target: &str, stream: &TcpStream, request_context: &RequestState) -> () {
     let parts: Vec<&str> = request_target.split('/').collect();
     if let Some(content) = parts.last() {
-        let response = create_http_response("200", &content, None, request_context.close_connection);
-        stream.write_all(response.as_bytes()).unwrap();
+        return_http_response("200", &content, None, request_context, &stream);
     }
     else {
-        let response: String = create_http_response("400", "", None, request_context.close_connection);
-        stream.write_all(response.as_bytes()).unwrap();
+        return_http_response("400", "", None, request_context, &stream);
     }
 }
 
-fn handle_user_agent(mut stream: &TcpStream, headers: &HashMap<String,String>, request_context: &request_state) -> () {
+fn handle_user_agent(stream: &TcpStream, headers: &HashMap<String,String>, request_context: &RequestState) -> () {
     if let Some(header_value)  = headers.get("user-agent") {
-        let response: String = create_http_response("200", header_value, None, request_context.close_connection);
-        stream.write_all(response.as_bytes()).unwrap();
+        return_http_response("200", header_value, None, request_context, &stream);
     }
     else {
-        let response: String = create_http_response("400", "", None, request_context.close_connection);
-        stream.write_all(response.as_bytes()).unwrap();
+        return_http_response("400", "", None, request_context, &stream);
     }
 }
 
-fn handle_base_request(mut stream: &TcpStream, request_context: &request_state) -> () {
-    let response: String = create_http_response("200", "", None, request_context.close_connection);
-    stream.write_all(response.as_bytes()).unwrap();
+fn handle_base_request(stream: &TcpStream, request_context: &RequestState) -> () {
+    return_http_response("200", "", None, request_context, &stream);
 }
 
-fn handle_file_request(request_target: &str, mut stream: &TcpStream, method: &str, 
-                            headers: &HashMap<String,String>, request_body: &str, request_context: &request_state) -> () {
+fn handle_file_request(request_target: &str, stream: &TcpStream, method: &str, 
+                            headers: &HashMap<String,String>, request_body: &str, request_context: &RequestState) -> () {
     let directory: String = get_directory();
     let full_path: Vec<&str> = request_target.split('/').collect();
 
     // TODO: better way to verify format
     if full_path.len() != 3 {
-        let response: String = create_http_response("400", "", None, request_context.close_connection);
-        stream.write_all(response.as_bytes()).unwrap();
+        return_http_response("400", "", None, request_context, &stream);
         return;
     }
 
@@ -58,35 +48,31 @@ fn handle_file_request(request_target: &str, mut stream: &TcpStream, method: &st
     }
 }
 
-fn handle_file_request_get(path: &PathBuf, mut stream: &TcpStream, headers: &HashMap<String,String>, request_context: &request_state) -> () {
+fn handle_file_request_get(path: &PathBuf, stream: &TcpStream, headers: &HashMap<String,String>, request_context: &RequestState) -> () {
     if !path.exists() {
-        let response: String = create_http_response("404", "", None, request_context.close_connection);
-        stream.write_all(response.as_bytes()).unwrap();
+        return_http_response("404", "", None, request_context, &stream);
     }
     else {
         let default: String = "application/octet-stream".to_string();
         let content: String = fs::read_to_string(path).unwrap();
         let content_type: &String = headers.get("content-type").unwrap_or(&default);
 
-        let response: String = create_http_response("200", &content, Some(content_type), request_context.close_connection);
-        stream.write_all(response.as_bytes()).unwrap();
+        return_http_response("200", &content, Some(content_type), request_context, &stream);
     }
 }
 
-fn handle_file_request_post(path: &PathBuf, mut stream: &TcpStream, request_body: &str, request_context: &request_state) -> () {
+fn handle_file_request_post(path: &PathBuf, stream: &TcpStream, request_body: &str, request_context: &RequestState) -> () {
     let mut file = File::create(path).unwrap();
     let updated_file: Result<(), std::io::Error> = file.write_all(request_body.as_bytes());
     if updated_file.is_err() {
-        let response: String = create_http_response("500", "", None, request_context.close_connection);
-        stream.write_all(response.as_bytes()).unwrap();
+        return_http_response("500", "", None, request_context, &stream);
     }
     else {
-        let response: String = create_http_response("201", "", None, request_context.close_connection);
-        stream.write_all(response.as_bytes()).unwrap();
+        return_http_response("201", "", None, request_context, &stream);
     }
 }
 
-pub fn handle_request(mut stream: TcpStream) {
+pub fn handle_request(stream: TcpStream) {
 
     loop {
         let request = get_request(&stream);
@@ -107,17 +93,17 @@ pub fn handle_request(mut stream: TcpStream) {
                 //must at least have the host header to be valid
                 let headers: HashMap<String, String> = populate_headers_dictionary(lines);
 
-                let request_context = request_state {
+                let request_context = RequestState {
                     close_connection: headers.get("connection").cloned().unwrap_or_else(||"".to_string()).eq("close"),
-                    accept_encoding : headers.get("accept-encoding").cloned().unwrap_or_else(||"".to_string()),
+                    accept_encoding: headers.get("accept-encoding").cloned().unwrap_or_else(||"".to_string()),
                 };
                     
                 let parts: Vec<&str> = request_line.split_whitespace().collect();
 
                 //following 3 elements must be included in a valid http reques
                 let Ok([method, request_target, _http_version]) : Result<[&str; 3], _> = parts.as_slice().try_into() else {
-                    let response: String = create_http_response("400", "", None, request_context.close_connection);
-                    stream.write_all(response.as_bytes()).unwrap();
+                    return_http_response("400", "", None, &request_context, &stream);
+                    //stream.write_all(response.as_bytes()).unwrap();
                     break;
                 };
 
@@ -135,8 +121,7 @@ pub fn handle_request(mut stream: TcpStream) {
                     handle_file_request(request_target, &stream, method, &headers, request_body, &request_context);
                 }
                 else {
-                    let response: String = create_http_response("404", "", None, request_context.close_connection);
-                    stream.write_all(response.as_bytes()).unwrap();
+                    return_http_response("404", "", None, &request_context, &stream);
                 }
 
                 if request_context.close_connection {
@@ -144,8 +129,8 @@ pub fn handle_request(mut stream: TcpStream) {
                 }
             }
             Err(_e) => {
-                let response: String = create_http_response("400", "", None, true);
-                stream.write_all(response.as_bytes()).unwrap();
+                let default_state = RequestState::default();
+                return_http_response("400", "", None, &default_state, &stream);
                 break;
             }
         }

@@ -1,5 +1,6 @@
 mod utilities;
 mod requests;
+mod types;
 
 use std::{thread};
 use std::net::TcpListener;
